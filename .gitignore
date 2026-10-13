@@ -1,0 +1,23 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+
+# Build and Distribution
+dist/
+build/
+*.spec
+
+# Test files & logs
+*.log
+test_rendered.png
+
+# OS specific files
+.DS_Store
+Thumbs.db
