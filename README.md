@@ -65,6 +65,27 @@ python3 app.py
 在 Windows 命令提示字元中執行：
 ```cmd
 pip install pyinstaller
-pyinstaller --name "MiniOCR" --windowed --onefile --clean --collect-all rapidocr_onnxruntime --collect-all onnxruntime app.py
+pyinstaller --name "MiniOCR" --windowed --onefile --clean --add-data "models;models" --collect-all rapidocr --collect-all onnxruntime --collect-all opencc_python_reimplemented app.py
 ```
 生成的 `dist\MiniOCR.exe` 即可直接複製到其他沒有安裝 Python 的 Windows 電腦上使用！
+
+---
+
+## 📜 開源許可與模型授權聲明 (License & Attribution)
+
+本專案遵循開源社群規範，依據 **Apache License 2.0** 進行合法歸屬聲明：
+
+### 1. PP-OCRv6 核心模型授權
+- **上游原始作品**：[PaddleOCR (Baidu)](https://github.com/PaddlePaddle/PaddleOCR)
+- **模型格式轉換與適配**：[RapidOCR (RapidAI)](https://github.com/RapidAI/RapidOCR)
+- **授權條款**：本專案使用之 **PP-OCRv6** ONNX 模型權重（`PP-OCRv6_det_medium.onnx`、`PP-OCRv6_rec_medium.onnx` 等）源自百度 PaddleOCR 衍生作品，並由 RapidOCR 團隊進行 ONNX 格式轉換適配。模型權重及轉換製品均依據 **[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)** 授權開源。
+- **使用範圍**：依據 Apache-2.0 協議，使用者可自由進行學術研究、個人使用、修改與二次分發（包含商業應用），但必須完整保留原始版權歸屬聲明。
+
+### 2. 第三方元件致謝
+- **[RapidOCR](https://github.com/RapidAI/RapidOCR)**：提供跨平台高效 ONNX 推理架構 (Apache-2.0)。
+- **[OpenCC (開放中文轉換)](https://github.com/BYVoid/OpenCC)**：提供高品質繁體中文臺灣正體轉換校正 (Apache-2.0)。
+- **[PyQt6](https://www.riverbankcomputing.com/software/pyqt/)**：提供跨平台桌面圖形使用者介面框架。
+
+### 3. 免責與商標聲明
+- 本專案與百度（Baidu）、飛槳（PaddlePaddle）或 RapidAI 官方無直接隸屬關係。提及上述名稱僅用於客觀描述模型來源與技術依賴，不代表上述機構為本專案背書。
+- 軟體均以「現狀（AS IS）」方式提供，不附帶任何明示或暗示之擔保。
