@@ -33,10 +33,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p models
-          echo "Downloading PP-OCRv6 det medium model..."
-          curl -L -o models/PP-OCRv6_det_medium.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/det/PP-OCRv6_det_medium.onnx"
-          echo "Downloading PP-OCRv6 rec medium model..."
-          curl -L -o models/PP-OCRv6_rec_medium.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx"
+          echo "Downloading PP-OCRv6 det small model..."
+          curl -L -o models/PP-OCRv6_det_small.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx"
+          echo "Downloading PP-OCRv6 rec small model..."
+          curl -L -o models/PP-OCRv6_rec_small.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx"
           ls -la models/
 
       - name: Build Windows Executable
@@ -49,7 +49,6 @@ jobs:
             --add-data "models;models" `
             --collect-all rapidocr `
             --collect-all onnxruntime `
-            --collect-all opencc `
             app.py
 
       - name: Upload Windows Executable Artifact

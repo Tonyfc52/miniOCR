@@ -37,45 +37,34 @@ from PyQt6.QtGui import QPixmap, QImage, QKeySequence, QShortcut, QAction, QFont
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QPlainTextEdit, QFileDialog, QMessageBox,
-    QFrame, QSplitter, QStatusBar, QProgressBar, QCheckBox, QComboBox, QSizePolicy
+    QFrame, QSplitter, QStatusBar, QProgressBar, QCheckBox, QSizePolicy
 )
-
-# OpenCC 繁簡轉換引擎
-try:
-    from opencc import OpenCC
-    _cc_tw = OpenCC("s2twp")  # 繁體中文（臺灣正體與用語校正）
-    _cc_hk = OpenCC("s2t")    # 繁體中文（標準繁體）
-    _cc_cn = OpenCC("t2s")    # 簡體中文
-except Exception:
-    _cc_tw = None
-    _cc_hk = None
-    _cc_cn = None
 
 # 支援的圖片副檔名
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff", ".tif", ".gif"}
 
 
 def get_offline_v6_models() -> Tuple[Optional[Path], Optional[Path]]:
-    """取得本地離線 PP-OCRv6 Medium 模型路徑（支援一般開發與 PyInstaller 打包環境）"""
+    """取得本地離線 PP-OCRv6 Small 模型路徑（體積極小、推論極快）"""
     if getattr(sys, "frozen", False):
         base_dir = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
     else:
         base_dir = Path(__file__).resolve().parent
 
-    det_path = base_dir / "models" / "PP-OCRv6_det_medium.onnx"
-    rec_path = base_dir / "models" / "PP-OCRv6_rec_medium.onnx"
+    det_path = base_dir / "models" / "PP-OCRv6_det_small.onnx"
+    rec_path = base_dir / "models" / "PP-OCRv6_rec_small.onnx"
     if det_path.exists() and rec_path.exists():
         return det_path, rec_path
     return None, None
 
 
 class OCRWorker(QThread):
-    """在背景線程執行 OCR 運算，優先載入本地離線 PP-OCRv6 Medium 模型"""
+    """在背景線程執行 OCR 運算，優先載入本地離線 PP-OCRv6 Small 輕巧模型"""
     finished = pyqtSignal(list, float)  # (ocr_results, elapsed_seconds)
     error = pyqtSignal(str)
 
     _engine = None  # 靜態共享模型實例
-    _engine_type = "v6_medium"  # "v6_medium" 或 "v3_legacy"
+    _engine_type = "v6_small"  # "v6_small" 或 "v3_legacy"
 
     def __init__(self, image_array: np.ndarray, enhance_small_text: bool = True):
         super().__init__()
@@ -87,7 +76,7 @@ class OCRWorker(QThread):
         if cls._engine is None:
             det_v6, rec_v6 = get_offline_v6_models()
             if det_v6 and rec_v6:
-                # 載入 PP-OCRv6 Medium 離線模型
+                # 載入 PP-OCRv6 Small 離線模型（極速、原生支援繁體中文與多語種）
                 from rapidocr import RapidOCR
                 cls._engine = RapidOCR(params={
                     "Global.log_level": "error",
@@ -102,7 +91,7 @@ class OCRWorker(QThread):
                     "Det.box_thresh": 0.40,
                     "Rec.model_path": str(rec_v6),
                 })
-                cls._engine_type = "v6_medium"
+                cls._engine_type = "v6_small"
             else:
                 # 後備：載入預設 rapidocr-onnxruntime
                 from rapidocr_onnxruntime import RapidOCR
@@ -136,7 +125,7 @@ class OCRWorker(QThread):
                     processed_img = np.array(pil_img)
 
             formatted_results = []
-            if self._engine_type == "v6_medium":
+            if "v6" in self._engine_type:
                 out = engine(processed_img)
                 elapsed = out.elapse if (hasattr(out, "elapse") and out.elapse) else (time.time() - start_time)
                 if out and getattr(out, "txts", None):
@@ -306,7 +295,7 @@ class MainWindow(QMainWindow):
         title_label.setFont(title_font)
         title_label.setStyleSheet("color: #1F2328;")
 
-        desc_label = QLabel("🚀 PP-OCRv6 Medium 離線版 • 簡繁一體多語種 • 8GB RAM 流暢運行")
+        desc_label = QLabel("🚀 PP-OCRv6 Small 離線版 • 原生繁中多語種 • 辦公極速流暢")
         desc_label.setStyleSheet("color: #656D76; font-size: 13px;")
 
         header_layout.addWidget(title_label)
@@ -373,7 +362,10 @@ class MainWindow(QMainWindow):
         opt_layout.addStretch()
         left_layout.addLayout(opt_layout)
 
-        # 開始辨識按鈕
+        # 開始辨識與停止按鈕列
+        action_btn_layout = QHBoxLayout()
+        action_btn_layout.setSpacing(8)
+
         self.btn_recognize = QPushButton("🔍 開始辨識 (Recognize)")
         self.btn_recognize.setFixedHeight(44)
         self.btn_recognize.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -398,7 +390,35 @@ class MainWindow(QMainWindow):
             }
         """)
         self.btn_recognize.clicked.connect(self.action_start_ocr)
-        left_layout.addWidget(self.btn_recognize)
+
+        self.btn_stop = QPushButton("⏹️ 停止")
+        self.btn_stop.setFixedHeight(44)
+        self.btn_stop.setFixedWidth(85)
+        self.btn_stop.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.setToolTip("若辨識過慢，點擊可立即中斷 (Esc)")
+        self.btn_stop.setStyleSheet("""
+            QPushButton {
+                background-color: #CF222E;
+                color: #FFFFFF;
+                font-size: 14px;
+                font-weight: bold;
+                border-radius: 8px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #A40E26;
+            }
+            QPushButton:disabled {
+                background-color: #E1E4E8;
+                color: #8C959F;
+            }
+        """)
+        self.btn_stop.clicked.connect(self.action_stop_ocr)
+
+        action_btn_layout.addWidget(self.btn_recognize, 1)
+        action_btn_layout.addWidget(self.btn_stop, 0)
+        left_layout.addLayout(action_btn_layout)
 
         splitter.addWidget(left_widget)
 
@@ -447,18 +467,6 @@ class MainWindow(QMainWindow):
         right_tools.addWidget(self.btn_save)
         right_tools.addWidget(self.btn_clear_text)
         right_tools.addStretch()
-
-        # 語言輸出選項下拉選單
-        self.combo_lang = QComboBox()
-        self.combo_lang.addItems([
-            "🇹🇼 繁體中文 (臺灣正體)",
-            "🇭🇰 繁體中文 (標準繁體)",
-            "🇨🇳 簡體中文",
-            "🔤 保持原始識別",
-        ])
-        self.combo_lang.setToolTip("選擇文字轉換格式（切換後即時生效，不需重新辨識）")
-        self.combo_lang.currentIndexChanged.connect(self.refresh_text_display)
-        right_tools.addWidget(self.combo_lang)
 
         # 合併段落選項
         self.chk_merge_lines = QCheckBox("合併為單一段落")
@@ -525,6 +533,10 @@ class MainWindow(QMainWindow):
         if sys.platform == "darwin":
             copy_all_sc2 = QShortcut(QKeySequence("Meta+Shift+C"), self)
             copy_all_sc2.activated.connect(self.action_copy_text)
+
+        # 停止辨識 (Esc)
+        stop_sc = QShortcut(QKeySequence("Esc"), self)
+        stop_sc.activated.connect(self.action_stop_ocr)
 
     def apply_theme(self):
         """設定精美且易閱讀的扁平化介面樣式"""
@@ -677,29 +689,16 @@ class MainWindow(QMainWindow):
         self.stats_label.setText(f"共 {char_count} 個字元 / {lines} 行")
 
     def refresh_text_display(self):
-        """依據語言選項與「合併段落」選項重新組織文字呈現"""
+        """依據「合併段落」選項重新組織文字呈現（原生支援繁體中文與多語種）"""
         if not self.raw_ocr_items:
             return
 
         raw_lines = [item[0] for item in self.raw_ocr_items]
 
-        # 根據下拉選單進行語言轉換
-        lang_idx = self.combo_lang.currentIndex()
-        converted_lines = []
-        for line in raw_lines:
-            if lang_idx == 0 and _cc_tw:    # 臺灣正體
-                converted_lines.append(_cc_tw.convert(line))
-            elif lang_idx == 1 and _cc_hk:  # 標準繁體
-                converted_lines.append(_cc_hk.convert(line))
-            elif lang_idx == 2 and _cc_cn:  # 簡體中文
-                converted_lines.append(_cc_cn.convert(line))
-            else:
-                converted_lines.append(line)
-
         if self.chk_merge_lines.isChecked():
             # 合併為段落（處理中英文空白間隔）
             merged = ""
-            for i, line in enumerate(converted_lines):
+            for i, line in enumerate(raw_lines):
                 if not merged:
                     merged = line
                 else:
@@ -710,7 +709,7 @@ class MainWindow(QMainWindow):
                         merged += line
             self.text_edit.setPlainText(merged)
         else:
-            self.text_edit.setPlainText("\n".join(converted_lines))
+            self.text_edit.setPlainText("\n".join(raw_lines))
 
     def action_start_ocr(self):
         """觸發 OCR 辨識"""
@@ -718,11 +717,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "請先上傳圖片或從剪貼簿貼上圖片再進行辨識。")
             return
 
-        # 鎖定按鈕，防止重複點擊
+        # 鎖定辨識按鈕，啟用停止按鈕
         self.btn_recognize.setEnabled(False)
-        self.btn_recognize.setText("⏳ 辨識中，請稍候...")
+        self.btn_recognize.setText("⏳ 辨識中...")
+        self.btn_stop.setEnabled(True)
         self.progress_bar.setVisible(True)
-        self.status_bar.showMessage("正在載入輕量模型並辨識中，請稍候...")
+        self.status_bar.showMessage("正在使用 PP-OCRv6 Small 快速辨識中...")
 
         # 轉換 QImage 為 NumPy 陣列
         img_array = qimage_to_numpy(self.current_image)
@@ -734,10 +734,22 @@ class MainWindow(QMainWindow):
         self.worker.error.connect(self.on_ocr_error)
         self.worker.start()
 
+    def action_stop_ocr(self):
+        """手動強制停止辨識線程"""
+        if self.worker and self.worker.isRunning():
+            self.worker.terminate()
+            self.worker.wait(300)
+            self.btn_recognize.setEnabled(True)
+            self.btn_recognize.setText("🔍 開始辨識 (Recognize)")
+            self.btn_stop.setEnabled(False)
+            self.progress_bar.setVisible(False)
+            self.status_bar.showMessage("⏹️ 已停止辨識作業", 4000)
+
     def on_ocr_finished(self, results: list, elapsed: float):
         """OCR 完成回調"""
         self.btn_recognize.setEnabled(True)
         self.btn_recognize.setText("🔍 開始辨識 (Recognize)")
+        self.btn_stop.setEnabled(False)
         self.progress_bar.setVisible(False)
 
         self.raw_ocr_items = results
@@ -754,6 +766,7 @@ class MainWindow(QMainWindow):
         """OCR 錯誤回調"""
         self.btn_recognize.setEnabled(True)
         self.btn_recognize.setText("🔍 開始辨識 (Recognize)")
+        self.btn_stop.setEnabled(False)
         self.progress_bar.setVisible(False)
         self.status_bar.showMessage(f"辨識過程出錯：{err_msg}", 6000)
         QMessageBox.critical(self, "辨識失敗", f"發生例外狀況：\n{err_msg}")

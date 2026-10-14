@@ -21,15 +21,15 @@ if not exist "venv\Scripts\python.exe" (
 )
 
 :: 2. 確保離線模型存在
-if not exist "models\PP-OCRv6_det_medium.onnx" (
-    echo [2/4] 正在下載 PP-OCRv6 Medium 離線模型 (約 130MB)...
+if not exist "models\PP-OCRv6_det_small.onnx" (
+    echo [2/4] 正在下載 PP-OCRv6 Small 離線模型 (約 30MB)...
     if not exist "models" mkdir models
-    curl -L -o models\PP-OCRv6_det_medium.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/det/PP-OCRv6_det_medium.onnx"
-    curl -L -o models\PP-OCRv6_rec_medium.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx"
+    curl -L -o models\PP-OCRv6_det_small.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx"
+    curl -L -o models\PP-OCRv6_rec_small.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx"
 )
 
 :: 3. 安裝核心依賴與 PyInstaller
-echo [3/4] 檢查並安裝必要套件 (PyInstaller, PyQt6, RapidOCR, OpenCC)...
+echo [3/4] 檢查並安裝必要套件 (PyInstaller, PyQt6, RapidOCR)...
 call venv\Scripts\pip install -r requirements.txt
 call venv\Scripts\pip install pyinstaller
 
@@ -39,9 +39,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: 3. 開始編譯為單一 .exe 執行檔
+:: 4. 開始編譯為單一 .exe 執行檔
 echo.
-echo [3/3] 正在使用 PyInstaller 進行打包（此步驟大約需要 1~2 分鐘）...
+echo [4/4] 正在使用 PyInstaller 進行打包（此步驟大約需要 1~2 分鐘）...
 echo 注意：正在將 ONNX 模型檔與 PyQt6 完整打包進 exe...
 echo.
 
@@ -54,7 +54,6 @@ venv\Scripts\pyinstaller.exe ^
     --add-data "models;models" ^
     --collect-all rapidocr ^
     --collect-all onnxruntime ^
-    --collect-all opencc ^
     app.py
 
 if errorlevel 1 (
