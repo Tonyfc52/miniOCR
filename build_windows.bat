@@ -45,6 +45,7 @@ venv\Scripts\pyinstaller.exe ^
     --noconfirm ^
     --collect-all rapidocr_onnxruntime ^
     --collect-all onnxruntime ^
+    --collect-all opencc_python_reimplemented ^
     app.py
 
 if errorlevel 1 (

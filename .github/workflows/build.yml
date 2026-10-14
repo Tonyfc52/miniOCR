@@ -38,6 +38,7 @@ jobs:
             --noconfirm `
             --collect-all rapidocr_onnxruntime `
             --collect-all onnxruntime `
+            --collect-all opencc_python_reimplemented `
             app.py
 
       - name: Upload Windows Executable Artifact

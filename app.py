@@ -37,37 +37,70 @@ from PyQt6.QtGui import QPixmap, QImage, QKeySequence, QShortcut, QAction, QFont
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QPlainTextEdit, QFileDialog, QMessageBox,
-    QFrame, QSplitter, QStatusBar, QProgressBar, QCheckBox, QSizePolicy
+    QFrame, QSplitter, QStatusBar, QProgressBar, QCheckBox, QComboBox, QSizePolicy
 )
+
+# OpenCC 繁簡轉換引擎
+try:
+    from opencc import OpenCC
+    _cc_tw = OpenCC("s2twp")  # 繁體中文（臺灣正體與用語校正）
+    _cc_hk = OpenCC("s2t")    # 繁體中文（標準繁體）
+    _cc_cn = OpenCC("t2s")    # 簡體中文
+except Exception:
+    _cc_tw = None
+    _cc_hk = None
+    _cc_cn = None
 
 # 支援的圖片副檔名
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff", ".tif", ".gif"}
 
 
 class OCRWorker(QThread):
-    """在背景線程執行 OCR 運算，避免凍結 GUI 介面"""
+    """在背景線程執行 OCR 運算，採用防漏字與高靈敏度參數"""
     finished = pyqtSignal(list, float)  # (ocr_results, elapsed_seconds)
     error = pyqtSignal(str)
 
     _engine = None  # 靜態共享模型實例，只需初始化一次
 
-    def __init__(self, image_array: np.ndarray):
+    def __init__(self, image_array: np.ndarray, enhance_small_text: bool = True):
         super().__init__()
         self.image_array = image_array
+        self.enhance_small_text = enhance_small_text
 
     @classmethod
     def get_engine(cls):
         if cls._engine is None:
-            # 延遲載入 RapidOCR 引擎（基於 ONNX Runtime CPU，極度輕量）
+            # 延遲載入 RapidOCR 引擎（基於 ONNX Runtime CPU，防漏字調優）
             from rapidocr_onnxruntime import RapidOCR
-            cls._engine = RapidOCR()
+            cls._engine = RapidOCR(
+                min_height=5,            # 原預設 30 會漏掉小於 30px 的截圖文字，降至 5 徹底避免漏行
+                width_height_ratio=35,   # 原預設 8 會漏掉超長句子，放寬至 35
+                text_score=0.35,         # 靈敏度門檻，捕捉較淡或筆畫複雜之文字
+                det_model_path=None,     # 維持內建模型
+                det_thresh=0.20,         # 原 0.3，降低二值化門檻以捕捉低對比或淺色字
+                det_box_thresh=0.40,     # 原 0.5，降低文字框過濾門檻，減少漏框
+                det_unclip_ratio=1.85,   # 原 1.6，適度擴大文字框邊界，避免首尾字元被削邊
+                det_limit_side_len=1800, # 原 736，避免高解析度截圖被強行縮小導致小字模糊
+            )
         return cls._engine
 
     def run(self):
         try:
             start_time = time.time()
             engine = self.get_engine()
-            results, elapse = engine(self.image_array)
+
+            # 智慧小字放大增強：若圖片高度小於 150px 或寬度小於 300px，進行高品質放大
+            processed_img = self.image_array
+            if self.enhance_small_text:
+                h, w = processed_img.shape[:2]
+                if h < 160 or w < 320:
+                    pil_img = Image.fromarray(processed_img)
+                    scale = min(3.0, max(2.0, 360.0 / max(h, 1)))
+                    new_w, new_h = int(w * scale), int(h * scale)
+                    pil_img = pil_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                    processed_img = np.array(pil_img)
+
+            results, elapse = engine(processed_img)
             elapsed = time.time() - start_time
             # results 為 [ [box, text, score], ... ]
             formatted_results = []
@@ -291,6 +324,15 @@ class MainWindow(QMainWindow):
         self.img_info_label.setStyleSheet("color: #656D76; font-size: 12px;")
         left_layout.addWidget(self.img_info_label)
 
+        # 辨識選項
+        opt_layout = QHBoxLayout()
+        self.chk_enhance = QCheckBox("🔍 小字增強 / 防漏字模式")
+        self.chk_enhance.setChecked(True)
+        self.chk_enhance.setToolTip("針對截圖小字進行智慧放大並開啟高靈敏偵測，防止漏字漏行")
+        opt_layout.addWidget(self.chk_enhance)
+        opt_layout.addStretch()
+        left_layout.addLayout(opt_layout)
+
         # 開始辨識按鈕
         self.btn_recognize = QPushButton("🔍 開始辨識 (Recognize)")
         self.btn_recognize.setFixedHeight(44)
@@ -351,7 +393,7 @@ class MainWindow(QMainWindow):
         """)
         self.btn_copy.clicked.connect(self.action_copy_text)
 
-        self.btn_save = QPushButton("💾 另存為文字檔")
+        self.btn_save = QPushButton("💾 另存文字")
         self.btn_save.setToolTip("將辨識結果儲存為 .txt")
         self.btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_save.clicked.connect(self.action_save_txt)
@@ -365,6 +407,18 @@ class MainWindow(QMainWindow):
         right_tools.addWidget(self.btn_save)
         right_tools.addWidget(self.btn_clear_text)
         right_tools.addStretch()
+
+        # 語言輸出選項下拉選單
+        self.combo_lang = QComboBox()
+        self.combo_lang.addItems([
+            "🇹🇼 繁體中文 (臺灣正體)",
+            "🇭🇰 繁體中文 (標準繁體)",
+            "🇨🇳 簡體中文",
+            "🔤 保持原始識別",
+        ])
+        self.combo_lang.setToolTip("選擇文字轉換格式（切換後即時生效，不需重新辨識）")
+        self.combo_lang.currentIndexChanged.connect(self.refresh_text_display)
+        right_tools.addWidget(self.combo_lang)
 
         # 合併段落選項
         self.chk_merge_lines = QCheckBox("合併為單一段落")
@@ -466,6 +520,19 @@ class MainWindow(QMainWindow):
             QCheckBox {
                 color: #424A53;
                 font-size: 13px;
+            }
+            QComboBox {
+                background-color: #FFFFFF;
+                color: #24292F;
+                border: 1px solid #D0D7DE;
+                border-radius: 6px;
+                padding: 4px 8px;
+                font-size: 13px;
+                min-width: 170px;
+            }
+            QComboBox:hover {
+                background-color: #F3F4F6;
+                border-color: #B0B8C1;
             }
             QStatusBar {
                 color: #57606A;
@@ -570,15 +637,29 @@ class MainWindow(QMainWindow):
         self.stats_label.setText(f"共 {char_count} 個字元 / {lines} 行")
 
     def refresh_text_display(self):
-        """依據「合併段落」選項重新組織文字呈現"""
+        """依據語言選項與「合併段落」選項重新組織文字呈現"""
         if not self.raw_ocr_items:
             return
 
-        lines = [item[0] for item in self.raw_ocr_items]
+        raw_lines = [item[0] for item in self.raw_ocr_items]
+
+        # 根據下拉選單進行語言轉換
+        lang_idx = self.combo_lang.currentIndex()
+        converted_lines = []
+        for line in raw_lines:
+            if lang_idx == 0 and _cc_tw:    # 臺灣正體
+                converted_lines.append(_cc_tw.convert(line))
+            elif lang_idx == 1 and _cc_hk:  # 標準繁體
+                converted_lines.append(_cc_hk.convert(line))
+            elif lang_idx == 2 and _cc_cn:  # 簡體中文
+                converted_lines.append(_cc_cn.convert(line))
+            else:
+                converted_lines.append(line)
+
         if self.chk_merge_lines.isChecked():
             # 合併為段落（處理中英文空白間隔）
             merged = ""
-            for i, line in enumerate(lines):
+            for i, line in enumerate(converted_lines):
                 if not merged:
                     merged = line
                 else:
@@ -589,7 +670,7 @@ class MainWindow(QMainWindow):
                         merged += line
             self.text_edit.setPlainText(merged)
         else:
-            self.text_edit.setPlainText("\n".join(lines))
+            self.text_edit.setPlainText("\n".join(converted_lines))
 
     def action_start_ocr(self):
         """觸發 OCR 辨識"""
@@ -606,8 +687,9 @@ class MainWindow(QMainWindow):
         # 轉換 QImage 為 NumPy 陣列
         img_array = qimage_to_numpy(self.current_image)
 
-        # 啟動背景 Worker 線程
-        self.worker = OCRWorker(img_array)
+        # 啟動背景 Worker 線程（包含防漏字小字增強設定）
+        enhance = self.chk_enhance.isChecked()
+        self.worker = OCRWorker(img_array, enhance_small_text=enhance)
         self.worker.finished.connect(self.on_ocr_finished)
         self.worker.error.connect(self.on_ocr_error)
         self.worker.start()
