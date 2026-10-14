@@ -12,7 +12,7 @@ if not exist "venv\Scripts\python.exe" (
         pause
         exit /b 1
     )
-    echo 正在安裝依賴套件 (PyQt6, rapidocr-onnxruntime, Pillow)...
+    echo 正在安裝依賴套件 (PyQt6, RapidOCR, Pillow, OpenCC)...
     call venv\Scripts\pip install -r requirements.txt
     if errorlevel 1 (
         echo 套件安裝失敗，請檢查網路連線
@@ -21,7 +21,14 @@ if not exist "venv\Scripts\python.exe" (
     )
 )
 
-echo 啟動 MiniOCR...
+if not exist "models\PP-OCRv6_det_medium.onnx" (
+    echo 正在下載 PP-OCRv6 Medium 離線模型 (約 130MB)...
+    if not exist "models" mkdir models
+    curl -L -o models\PP-OCRv6_det_medium.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/det/PP-OCRv6_det_medium.onnx"
+    curl -L -o models\PP-OCRv6_rec_medium.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx"
+)
+
+echo 啟動 MiniOCR (PP-OCRv6 Medium 離線版)...
 venv\Scripts\python.exe app.py
 if errorlevel 1 (
     pause

@@ -55,12 +55,27 @@ except Exception:
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff", ".tif", ".gif"}
 
 
+def get_offline_v6_models() -> Tuple[Optional[Path], Optional[Path]]:
+    """取得本地離線 PP-OCRv6 Medium 模型路徑（支援一般開發與 PyInstaller 打包環境）"""
+    if getattr(sys, "frozen", False):
+        base_dir = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    else:
+        base_dir = Path(__file__).resolve().parent
+
+    det_path = base_dir / "models" / "PP-OCRv6_det_medium.onnx"
+    rec_path = base_dir / "models" / "PP-OCRv6_rec_medium.onnx"
+    if det_path.exists() and rec_path.exists():
+        return det_path, rec_path
+    return None, None
+
+
 class OCRWorker(QThread):
-    """在背景線程執行 OCR 運算，採用防漏字與高靈敏度參數"""
+    """在背景線程執行 OCR 運算，優先載入本地離線 PP-OCRv6 Medium 模型"""
     finished = pyqtSignal(list, float)  # (ocr_results, elapsed_seconds)
     error = pyqtSignal(str)
 
-    _engine = None  # 靜態共享模型實例，只需初始化一次
+    _engine = None  # 靜態共享模型實例
+    _engine_type = "v6_medium"  # "v6_medium" 或 "v3_legacy"
 
     def __init__(self, image_array: np.ndarray, enhance_small_text: bool = True):
         super().__init__()
@@ -70,18 +85,38 @@ class OCRWorker(QThread):
     @classmethod
     def get_engine(cls):
         if cls._engine is None:
-            # 延遲載入 RapidOCR 引擎（基於 ONNX Runtime CPU，防漏字調優）
-            from rapidocr_onnxruntime import RapidOCR
-            cls._engine = RapidOCR(
-                min_height=5,            # 原預設 30 會漏掉小於 30px 的截圖文字，降至 5 徹底避免漏行
-                width_height_ratio=35,   # 原預設 8 會漏掉超長句子，放寬至 35
-                text_score=0.35,         # 靈敏度門檻，捕捉較淡或筆畫複雜之文字
-                det_model_path=None,     # 維持內建模型
-                det_thresh=0.20,         # 原 0.3，降低二值化門檻以捕捉低對比或淺色字
-                det_box_thresh=0.40,     # 原 0.5，降低文字框過濾門檻，減少漏框
-                det_unclip_ratio=1.85,   # 原 1.6，適度擴大文字框邊界，避免首尾字元被削邊
-                det_limit_side_len=1800, # 原 736，避免高解析度截圖被強行縮小導致小字模糊
-            )
+            det_v6, rec_v6 = get_offline_v6_models()
+            if det_v6 and rec_v6:
+                # 載入 PP-OCRv6 Medium 離線模型
+                from rapidocr import RapidOCR
+                cls._engine = RapidOCR(params={
+                    "Global.log_level": "error",
+                    "Global.use_cls": False,
+                    "Global.text_score": 0.35,
+                    "Global.min_height": 5,
+                    "Global.width_height_ratio": 35,
+                    "Det.model_path": str(det_v6),
+                    "Det.unclip_ratio": 1.85,
+                    "Det.limit_side_len": 1800,
+                    "Det.thresh": 0.20,
+                    "Det.box_thresh": 0.40,
+                    "Rec.model_path": str(rec_v6),
+                })
+                cls._engine_type = "v6_medium"
+            else:
+                # 後備：載入預設 rapidocr-onnxruntime
+                from rapidocr_onnxruntime import RapidOCR
+                cls._engine = RapidOCR(
+                    min_height=5,
+                    width_height_ratio=35,
+                    text_score=0.35,
+                    det_model_path=None,
+                    det_thresh=0.20,
+                    det_box_thresh=0.40,
+                    det_unclip_ratio=1.85,
+                    det_limit_side_len=1800,
+                )
+                cls._engine_type = "v3_legacy"
         return cls._engine
 
     def run(self):
@@ -89,7 +124,7 @@ class OCRWorker(QThread):
             start_time = time.time()
             engine = self.get_engine()
 
-            # 智慧小字放大增強：若圖片高度小於 150px 或寬度小於 300px，進行高品質放大
+            # 智慧小字放大增強：若圖片高度小於 160px 或寬度小於 320px，進行高品質插值放大
             processed_img = self.image_array
             if self.enhance_small_text:
                 h, w = processed_img.shape[:2]
@@ -100,15 +135,20 @@ class OCRWorker(QThread):
                     pil_img = pil_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
                     processed_img = np.array(pil_img)
 
-            results, elapse = engine(processed_img)
-            elapsed = time.time() - start_time
-            # results 為 [ [box, text, score], ... ]
             formatted_results = []
-            if results:
-                for item in results:
-                    text = item[1]
-                    score = float(item[2])
-                    formatted_results.append((text, score))
+            if self._engine_type == "v6_medium":
+                out = engine(processed_img)
+                elapsed = out.elapse if (hasattr(out, "elapse") and out.elapse) else (time.time() - start_time)
+                if out and getattr(out, "txts", None):
+                    for text, score in zip(out.txts, out.scores):
+                        formatted_results.append((text, float(score)))
+            else:
+                results, elapse = engine(processed_img)
+                elapsed = time.time() - start_time
+                if results:
+                    for item in results:
+                        formatted_results.append((item[1], float(item[2])))
+
             self.finished.emit(formatted_results, elapsed)
         except Exception as e:
             self.error.emit(str(e))
@@ -266,7 +306,7 @@ class MainWindow(QMainWindow):
         title_label.setFont(title_font)
         title_label.setStyleSheet("color: #1F2328;")
 
-        desc_label = QLabel("輕量高效 • 支援中英文 • 8GB RAM 流暢運行")
+        desc_label = QLabel("🚀 PP-OCRv6 Medium 離線版 • 簡繁一體多語種 • 8GB RAM 流暢運行")
         desc_label.setStyleSheet("color: #656D76; font-size: 13px;")
 
         header_layout.addWidget(title_label)

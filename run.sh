@@ -8,9 +8,17 @@ cd "$DIR"
 if [ ! -d "venv" ]; then
     echo "正在建立 Python 虛擬環境 (venv)..."
     python3 -m venv venv
-    echo "正在安裝依賴套件 (PyQt6, rapidocr-onnxruntime, Pillow)..."
+    echo "正在安裝依賴套件 (PyQt6, RapidOCR, Pillow, OpenCC)..."
     ./venv/bin/pip install -r requirements.txt
 fi
 
-echo "啟動 MiniOCR..."
+# 確保離線模型存在
+if [ ! -f "models/PP-OCRv6_det_medium.onnx" ]; then
+    echo "正在下載 PP-OCRv6 Medium 離線模型..."
+    mkdir -p models
+    curl -L -o models/PP-OCRv6_det_medium.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/det/PP-OCRv6_det_medium.onnx"
+    curl -L -o models/PP-OCRv6_rec_medium.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx"
+fi
+
+echo "啟動 MiniOCR (PP-OCRv6 Medium 離線版)..."
 ./venv/bin/python app.py

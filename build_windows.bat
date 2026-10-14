@@ -11,7 +11,7 @@ echo.
 
 :: 1. 確保虛擬環境存在
 if not exist "venv\Scripts\python.exe" (
-    echo [1/3] 正在建立虛擬環境...
+    echo [1/4] 正在建立虛擬環境...
     python -m venv venv
     if errorlevel 1 (
         echo [錯誤] 找不到 Python，請確認已安裝 Python 3.9+ 並勾選 Add to PATH
@@ -20,8 +20,16 @@ if not exist "venv\Scripts\python.exe" (
     )
 )
 
-:: 2. 安裝核心依賴與 PyInstaller
-echo [2/3] 檢查並安裝必要套件 (PyInstaller, PyQt6, RapidOCR)...
+:: 2. 確保離線模型存在
+if not exist "models\PP-OCRv6_det_medium.onnx" (
+    echo [2/4] 正在下載 PP-OCRv6 Medium 離線模型 (約 130MB)...
+    if not exist "models" mkdir models
+    curl -L -o models\PP-OCRv6_det_medium.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/det/PP-OCRv6_det_medium.onnx"
+    curl -L -o models\PP-OCRv6_rec_medium.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx"
+)
+
+:: 3. 安裝核心依賴與 PyInstaller
+echo [3/4] 檢查並安裝必要套件 (PyInstaller, PyQt6, RapidOCR, OpenCC)...
 call venv\Scripts\pip install -r requirements.txt
 call venv\Scripts\pip install pyinstaller
 
@@ -43,6 +51,8 @@ venv\Scripts\pyinstaller.exe ^
     --onefile ^
     --clean ^
     --noconfirm ^
+    --add-data "models;models" ^
+    --collect-all rapidocr ^
     --collect-all rapidocr_onnxruntime ^
     --collect-all onnxruntime ^
     --collect-all opencc_python_reimplemented ^

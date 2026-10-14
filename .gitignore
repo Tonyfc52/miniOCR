@@ -18,6 +18,9 @@ build/
 *.log
 test_rendered.png
 
+# Large Model Binaries (auto-downloaded by scripts)
+models/*.onnx
+
 # OS specific files
 .DS_Store
 Thumbs.db
