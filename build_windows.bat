@@ -53,9 +53,8 @@ venv\Scripts\pyinstaller.exe ^
     --noconfirm ^
     --add-data "models;models" ^
     --collect-all rapidocr ^
-    --collect-all rapidocr_onnxruntime ^
     --collect-all onnxruntime ^
-    --collect-all opencc_python_reimplemented ^
+    --collect-all opencc ^
     app.py
 
 if errorlevel 1 (

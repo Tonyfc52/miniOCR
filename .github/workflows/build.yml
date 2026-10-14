@@ -29,6 +29,16 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Download PP-OCRv6 Offline Models
+        shell: bash
+        run: |
+          mkdir -p models
+          echo "Downloading PP-OCRv6 det medium model..."
+          curl -L -o models/PP-OCRv6_det_medium.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/det/PP-OCRv6_det_medium.onnx"
+          echo "Downloading PP-OCRv6 rec medium model..."
+          curl -L -o models/PP-OCRv6_rec_medium.onnx "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx"
+          ls -la models/
+
       - name: Build Windows Executable
         run: |
           pyinstaller --name "MiniOCR-Windows" `
@@ -38,9 +48,8 @@ jobs:
             --noconfirm `
             --add-data "models;models" `
             --collect-all rapidocr `
-            --collect-all rapidocr_onnxruntime `
             --collect-all onnxruntime `
-            --collect-all opencc_python_reimplemented `
+            --collect-all opencc `
             app.py
 
       - name: Upload Windows Executable Artifact
