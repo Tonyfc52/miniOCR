@@ -29,9 +29,9 @@ if not exist "models\PP-OCRv6_det_small.onnx" (
 )
 
 :: 3. 安裝核心依賴與 PyInstaller
-echo [3/4] 檢查並安裝必要套件 (PyInstaller, PyQt6, RapidOCR)...
+echo [3/4] 檢查並安裝必要套件 (PyInstaller, PyQt6, RapidOCR, ONNXRuntime)...
 call venv\Scripts\pip install -r requirements.txt
-call venv\Scripts\pip install pyinstaller
+call venv\Scripts\pip install pyinstaller onnxruntime
 
 if errorlevel 1 (
     echo [錯誤] 套件安裝失敗，請檢查網路連線
@@ -52,8 +52,10 @@ venv\Scripts\pyinstaller.exe ^
     --clean ^
     --noconfirm ^
     --add-data "models;models" ^
+    --hidden-import onnxruntime ^
     --collect-all rapidocr ^
     --collect-all onnxruntime ^
+    --copy-metadata onnxruntime ^
     app.py
 
 if errorlevel 1 (

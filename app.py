@@ -23,8 +23,10 @@ if not getattr(sys, "frozen", False):
 
 # 壓制 ONNX Runtime 的除錯雜訊
 os.environ["ORT_LOGGING_LEVEL"] = "3"
+import onnxruntime  # 明確引入，確保 PyInstaller 與靜態打包能完整納入 onnxruntime 與 C++ DLL
 
 import io
+
 import time
 from typing import Optional, List, Tuple
 
