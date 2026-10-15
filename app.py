@@ -23,19 +23,24 @@ if not getattr(sys, "frozen", False):
 
 # 壓制 ONNX Runtime 的除錯雜訊
 os.environ["ORT_LOGGING_LEVEL"] = "3"
-import onnxruntime  # 明確引入，確保 PyInstaller 與靜態打包能完整納入 onnxruntime 與 C++ DLL
 
-import io
+# Windows 打包 (PyInstaller) 的 OCR 子行程會從這裡直接進入，必須在載入 Qt 之前呼叫
+import multiprocessing
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
 
 import time
 from typing import Optional, List, Tuple
 
 import numpy as np
-from PIL import Image
+
+# OCR 核心（onnxruntime / rapidocr 只會在子行程中載入，GUI 行程保持輕量）
+import ocr_engine
+from ocr_engine import OCRProcess, OCRCancelled, MAX_WIDTH
 
 from PyQt6 import QtCore, QtGui, QtWidgets
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QBuffer, QIODevice
-from PyQt6.QtGui import QPixmap, QImage, QKeySequence, QShortcut, QAction, QFont, QColor, QPalette
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtGui import QPixmap, QImage, QImageReader, QKeySequence, QShortcut, QAction, QFont, QColor, QPalette
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QPlainTextEdit, QFileDialog, QMessageBox,
@@ -46,103 +51,37 @@ from PyQt6.QtWidgets import (
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff", ".tif", ".gif"}
 
 
-def get_offline_v6_models() -> Tuple[Optional[Path], Optional[Path]]:
-    """取得本地離線 PP-OCRv6 Small 模型路徑（體積極小、推論極快）"""
-    if getattr(sys, "frozen", False):
-        base_dir = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-    else:
-        base_dir = Path(__file__).resolve().parent
-
-    det_path = base_dir / "models" / "PP-OCRv6_det_small.onnx"
-    rec_path = base_dir / "models" / "PP-OCRv6_rec_small.onnx"
-    if det_path.exists() and rec_path.exists():
-        return det_path, rec_path
-    return None, None
-
-
 class OCRWorker(QThread):
-    """在背景線程執行 OCR 運算，優先載入本地離線 PP-OCRv6 Small 輕巧模型"""
-    finished = pyqtSignal(list, float)  # (ocr_results, elapsed_seconds)
+    """
+    背景執行緒：把影像交給 OCR 子行程並等待結果。
+    真正的運算在子行程中進行，按「停止」時直接結束子行程，
+    本執行緒會在 0.1 秒內正常返回，不使用危險的 QThread.terminate()。
+    """
+    result_ready = pyqtSignal(list, float)  # (ocr_results, elapsed_seconds)
     error = pyqtSignal(str)
+    cancelled = pyqtSignal()
 
-    _engine = None  # 靜態共享模型實例
-    _engine_type = "v6_small"  # "v6_small" 或 "v3_legacy"
-
-    def __init__(self, image_array: np.ndarray, enhance_small_text: bool = True):
+    def __init__(self, ocr_proc: OCRProcess, image_array: Optional[np.ndarray],
+                 enhance_small_text: bool = True, warm_up_only: bool = False):
         super().__init__()
+        self.ocr_proc = ocr_proc
         self.image_array = image_array
         self.enhance_small_text = enhance_small_text
-
-    @classmethod
-    def get_engine(cls):
-        if cls._engine is None:
-            det_v6, rec_v6 = get_offline_v6_models()
-            if det_v6 and rec_v6:
-                # 載入 PP-OCRv6 Small 離線模型（極速、原生支援繁體中文與多語種）
-                from rapidocr import RapidOCR
-                cls._engine = RapidOCR(params={
-                    "Global.log_level": "error",
-                    "Global.use_cls": False,
-                    "Global.text_score": 0.35,
-                    "Global.min_height": 5,
-                    "Global.width_height_ratio": 35,
-                    "Det.model_path": str(det_v6),
-                    "Det.unclip_ratio": 1.85,
-                    "Det.limit_side_len": 1800,
-                    "Det.thresh": 0.20,
-                    "Det.box_thresh": 0.40,
-                    "Rec.model_path": str(rec_v6),
-                })
-                cls._engine_type = "v6_small"
-            else:
-                # 後備：載入預設 rapidocr-onnxruntime
-                from rapidocr_onnxruntime import RapidOCR
-                cls._engine = RapidOCR(
-                    min_height=5,
-                    width_height_ratio=35,
-                    text_score=0.35,
-                    det_model_path=None,
-                    det_thresh=0.20,
-                    det_box_thresh=0.40,
-                    det_unclip_ratio=1.85,
-                    det_limit_side_len=1800,
-                )
-                cls._engine_type = "v3_legacy"
-        return cls._engine
+        self.warm_up_only = warm_up_only
 
     def run(self):
+        if self.warm_up_only:
+            self.ocr_proc.warm_up()
+            return
         try:
-            start_time = time.time()
-            engine = self.get_engine()
-
-            # 智慧小字放大增強：若圖片高度小於 160px 或寬度小於 320px，進行高品質插值放大
-            processed_img = self.image_array
-            if self.enhance_small_text:
-                h, w = processed_img.shape[:2]
-                if h < 160 or w < 320:
-                    pil_img = Image.fromarray(processed_img)
-                    scale = min(3.0, max(2.0, 360.0 / max(h, 1)))
-                    new_w, new_h = int(w * scale), int(h * scale)
-                    pil_img = pil_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-                    processed_img = np.array(pil_img)
-
-            formatted_results = []
-            if "v6" in self._engine_type:
-                out = engine(processed_img)
-                elapsed = out.elapse if (hasattr(out, "elapse") and out.elapse) else (time.time() - start_time)
-                if out and getattr(out, "txts", None):
-                    for text, score in zip(out.txts, out.scores):
-                        formatted_results.append((text, float(score)))
-            else:
-                results, elapse = engine(processed_img)
-                elapsed = time.time() - start_time
-                if results:
-                    for item in results:
-                        formatted_results.append((item[1], float(item[2])))
-
-            self.finished.emit(formatted_results, elapsed)
+            results, elapsed = self.ocr_proc.recognize(self.image_array, self.enhance_small_text)
+            self.result_ready.emit(results, elapsed)
+        except OCRCancelled:
+            self.cancelled.emit()
         except Exception as e:
             self.error.emit(str(e))
+        finally:
+            self.image_array = None
 
 
 class DropAreaLabel(QLabel):
@@ -229,8 +168,8 @@ class DropAreaLabel(QLabel):
                 file_path = url.toLocalFile()
                 p = Path(file_path)
                 if p.suffix.lower() in IMAGE_EXTENSIONS:
-                    loaded_img = QImage(file_path)
-                    if not loaded_img.isNull():
+                    loaded_img = load_image_file(file_path)
+                    if loaded_img is not None:
                         self.image_dropped.emit(loaded_img)
                         event.acceptProposedAction()
                         return
@@ -242,28 +181,67 @@ def qimage_from_mime(mime_data: QtCore.QMimeData) -> Optional[QImage]:
     if mime_data.hasImage():
         qimg = mime_data.imageData()
         if isinstance(qimg, QImage) and not qimg.isNull():
-            return qimg
+            return limit_qimage(qimg)
         elif isinstance(qimg, QPixmap) and not qimg.isNull():
-            return qimg.toImage()
+            return limit_qimage(qimg.toImage())
 
     if mime_data.hasUrls():
         for url in mime_data.urls():
             path = url.toLocalFile()
             if Path(path).suffix.lower() in IMAGE_EXTENSIONS:
-                img = QImage(path)
-                if not img.isNull():
+                img = load_image_file(path)
+                if img is not None:
                     return img
     return None
 
 
+# 載入圖片時的像素上限（寬度上限 MAX_WIDTH，總像素上限約 2400 萬）
+# 避免數千萬像素的相片在 GUI 端就佔用數百 MB 記憶體
+MAX_LOAD_PIXELS = 24_000_000
+
+
+def _limited_size(w: int, h: int) -> Tuple[int, int]:
+    scale = 1.0
+    if w > MAX_WIDTH:
+        scale = MAX_WIDTH / w
+    if (w * scale) * (h * scale) > MAX_LOAD_PIXELS:
+        scale = (MAX_LOAD_PIXELS / (w * h)) ** 0.5
+    return max(1, int(w * scale)), max(1, int(h * scale))
+
+
+def limit_qimage(img: QImage) -> QImage:
+    """將過大的 QImage 等比例縮小（寬度 ≤ MAX_WIDTH 且總像素 ≤ MAX_LOAD_PIXELS）"""
+    w, h = img.width(), img.height()
+    nw, nh = _limited_size(w, h)
+    if (nw, nh) != (w, h):
+        img = img.scaled(nw, nh, Qt.AspectRatioMode.IgnoreAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation)
+    return img
+
+
+def load_image_file(path: str) -> Optional[QImage]:
+    """讀取圖檔：解碼時即直接縮小，大型相片不會先以原尺寸載入記憶體"""
+    reader = QImageReader(path)
+    reader.setAutoTransform(True)  # 依 EXIF 自動轉正手機照片
+    size = reader.size()
+    if size.isValid():
+        nw, nh = _limited_size(size.width(), size.height())
+        if (nw, nh) != (size.width(), size.height()):
+            reader.setScaledSize(QtCore.QSize(nw, nh))
+    img = reader.read()
+    if img.isNull():
+        return None
+    return limit_qimage(img)
+
+
 def qimage_to_numpy(qimg: QImage) -> np.ndarray:
-    """安全地將 QImage 轉為 NumPy RGB 陣列（適用於 RapidOCR）"""
-    buffer = QBuffer()
-    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-    qimg.save(buffer, "PNG")
-    bytes_data = bytes(buffer.data())
-    pil_image = Image.open(io.BytesIO(bytes_data)).convert("RGB")
-    return np.array(pil_image)
+    """直接將 QImage 轉為 NumPy RGB 陣列（不經 PNG 編解碼，省時省記憶體）"""
+    qimg = limit_qimage(qimg).convertToFormat(QImage.Format.Format_RGB888)
+    w, h, bpl = qimg.width(), qimg.height(), qimg.bytesPerLine()
+    ptr = qimg.constBits()
+    ptr.setsize(h * bpl)
+    arr = np.frombuffer(ptr, dtype=np.uint8).reshape(h, bpl)[:, : w * 3]
+    return arr.reshape(h, w, 3).copy()
 
 
 class MainWindow(QMainWindow):
@@ -276,10 +254,20 @@ class MainWindow(QMainWindow):
         self.current_image: Optional[QImage] = None
         self.raw_ocr_items: List[Tuple[str, float]] = []
         self.worker: Optional[OCRWorker] = None
+        self.ocr_proc = OCRProcess()
+        self._warm_worker: Optional[OCRWorker] = None
 
         self.init_ui()
         self.setup_shortcuts()
         self.apply_theme()
+
+        # 延遲 500ms 在背景啟動子行程預載入模型，讓後續辨識即時無延遲
+        QTimer.singleShot(500, self._start_warmup)
+
+    def _start_warmup(self):
+        """背景預熱模型子行程"""
+        self._warm_worker = OCRWorker(self.ocr_proc, None, warm_up_only=True)
+        self._warm_worker.start()
 
     def init_ui(self):
         central_widget = QWidget()
@@ -611,8 +599,8 @@ class MainWindow(QMainWindow):
             "圖片檔案 (*.png *.jpg *.jpeg *.bmp *.webp *.tiff);;所有檔案 (*.*)"
         )
         if file_path:
-            img = QImage(file_path)
-            if img.isNull():
+            img = load_image_file(file_path)
+            if img is None:
                 QMessageBox.warning(self, "讀取失敗", "無法載入此圖片檔案，請確認格式是否正確。")
                 return
             self.load_image_object(img, source_info=Path(file_path).name)
@@ -729,23 +717,28 @@ class MainWindow(QMainWindow):
         # 轉換 QImage 為 NumPy 陣列
         img_array = qimage_to_numpy(self.current_image)
 
-        # 啟動背景 Worker 線程（包含防漏字小字增強設定）
+        # 啟動背景 Worker 線程（包含防漏字小字增強設定與獨立子行程管理）
         enhance = self.chk_enhance.isChecked()
-        self.worker = OCRWorker(img_array, enhance_small_text=enhance)
-        self.worker.finished.connect(self.on_ocr_finished)
+        self.worker = OCRWorker(self.ocr_proc, img_array, enhance_small_text=enhance)
+        self.worker.result_ready.connect(self.on_ocr_finished)
         self.worker.error.connect(self.on_ocr_error)
+        self.worker.cancelled.connect(self.on_ocr_cancelled)
         self.worker.start()
 
     def action_stop_ocr(self):
-        """手動強制停止辨識線程"""
-        if self.worker and self.worker.isRunning():
-            self.worker.terminate()
-            self.worker.wait(300)
-            self.btn_recognize.setEnabled(True)
-            self.btn_recognize.setText("🔍 開始辨識 (Recognize)")
-            self.btn_stop.setEnabled(False)
-            self.progress_bar.setVisible(False)
-            self.status_bar.showMessage("⏹️ 已停止辨識作業", 4000)
+        """手動安全中斷辨識（終止子行程，絕不破壞主程式或造成閃退）"""
+        self.btn_stop.setEnabled(False)
+        self.status_bar.showMessage("正在中斷辨識作業...")
+        # 透過 OCRProcess 中斷獨立子行程，安全無副作用
+        self.ocr_proc.cancel()
+
+    def on_ocr_cancelled(self):
+        """OCR 中斷回調"""
+        self.btn_recognize.setEnabled(True)
+        self.btn_recognize.setText("🔍 開始辨識 (Recognize)")
+        self.btn_stop.setEnabled(False)
+        self.progress_bar.setVisible(False)
+        self.status_bar.showMessage("⏹️ 已成功停止辨識作業", 4000)
 
     def on_ocr_finished(self, results: list, elapsed: float):
         """OCR 完成回調"""
@@ -772,6 +765,12 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.status_bar.showMessage(f"辨識過程出錯：{err_msg}", 6000)
         QMessageBox.critical(self, "辨識失敗", f"發生例外狀況：\n{err_msg}")
+
+    def closeEvent(self, event):
+        """視窗關閉時回收背景 OCR 子行程資源"""
+        if hasattr(self, "ocr_proc") and self.ocr_proc:
+            self.ocr_proc.shutdown()
+        event.accept()
 
 
 def main():
